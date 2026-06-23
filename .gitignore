@@ -1,6 +1,9 @@
 # Never commit your secrets
 .env
 
+# Personal local notes — never publish
+*.local.md
+
 # Python noise
 __pycache__/
 *.pyc

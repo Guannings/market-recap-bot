@@ -119,6 +119,12 @@ CRYPTO_FLOW_TERMS = [
     "net flows", "spot etf", "fund", "blackrock", "fidelity", "grayscale",
     "franklin templeton", "saylor", "microstrategy",
 ]
+# Legal/governance/security drama that isn't an institutional flow — dropped.
+CRYPTO_EXCLUDE = [
+    "sue", "sues", "sued", "lawsuit", "lawsuits", "charged", "charges", "fraud",
+    "indict", "indicted", "settlement", "court", "judge", "hack", "hacked",
+    "exploit", "breach", "scam", "ponzi", "probe", "investigation", "sentenced",
+]
 
 # A headline is kept only if it mentions one of these (filters out lifestyle/junk).
 MARKET_KEYWORDS = [
@@ -388,7 +394,7 @@ def fetch_crypto_flows(limit=8, max_age_hours=72):
                 t = title.lower()
                 if not title or _blocked(link) or _blocked(src) or _blocked(title):
                     continue
-                if _word_hit(t, NOISE_PATTERNS):
+                if _word_hit(t, NOISE_PATTERNS) or _word_hit(t, CRYPTO_EXCLUDE):
                     continue
                 # must mention a crypto asset AND an institutional/flow term
                 if not (_word_hit(t, CRYPTO_ASSET_TERMS) and _word_hit(t, CRYPTO_FLOW_TERMS)):
