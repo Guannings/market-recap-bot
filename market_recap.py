@@ -96,6 +96,30 @@ NEWS_FEEDS = [
     "https://www.theguardian.com/business/economics/rss",      # Guardian Economics
 ]
 
+# Reputable crypto desks for the institutional-flows section.
+CRYPTO_FEEDS = [
+    "https://www.theblock.co/rss.xml",          # The Block
+    "https://decrypt.co/feed",                  # Decrypt
+    "https://bitcoinmagazine.com/feed",         # Bitcoin Magazine
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",  # CoinDesk (if/when live)
+]
+
+# A crypto headline is kept for the flows section only if it mentions BOTH a
+# crypto asset AND an institutional/flow term (so it's "what the big players are
+# doing", not price action or unrelated VC funding rounds).
+CRYPTO_ASSET_TERMS = [
+    "bitcoin", "btc", "ether", "ethereum", "crypto", "solana", "stablecoin",
+    "digital asset", "ibit", "gbtc", "fbtc",
+]
+CRYPTO_FLOW_TERMS = [
+    "etf", "etfs", "inflow", "inflows", "outflow", "outflows", "institution",
+    "institutional", "treasury", "accumulate", "accumulated", "accumulation",
+    "holdings", "buys", "bought", "purchase", "purchased", "acquire", "acquired",
+    "adds", "added", "aum", "reserve", "reserves", "stake", "allocation",
+    "net flows", "spot etf", "fund", "blackrock", "fidelity", "grayscale",
+    "franklin templeton", "saylor", "microstrategy",
+]
+
 # A headline is kept only if it mentions one of these (filters out lifestyle/junk).
 MARKET_KEYWORDS = [
     "stock", "stocks", "share", "shares", "market", "markets", "wall street",
@@ -345,6 +369,47 @@ def fetch_headlines(limit=8):
     return deduped[:limit]
 
 
+def fetch_crypto_flows(limit=8, max_age_hours=72):
+    """Headlines about what institutions are doing in crypto: ETF in/outflows,
+    treasury/corporate BTC buys, fund allocations — NOT price action."""
+    out = []
+    try:
+        import feedparser
+    except Exception:
+        return out
+    for url in CRYPTO_FEEDS:
+        try:
+            feed = feedparser.parse(url)
+            feed_src = feed.feed.get("title", "")
+            for entry in feed.entries:
+                link = getattr(entry, "link", "")
+                title = getattr(entry, "title", "").strip()
+                src = getattr(getattr(entry, "source", None), "title", "") or feed_src
+                t = title.lower()
+                if not title or _blocked(link) or _blocked(src) or _blocked(title):
+                    continue
+                if _word_hit(t, NOISE_PATTERNS):
+                    continue
+                # must mention a crypto asset AND an institutional/flow term
+                if not (_word_hit(t, CRYPTO_ASSET_TERMS) and _word_hit(t, CRYPTO_FLOW_TERMS)):
+                    continue
+                age = _entry_age_hours(entry)
+                if age is not None and age > max_age_hours:
+                    continue
+                out.append({"title": title, "link": link, "source": src,
+                            "age": age if age is not None else 9e9})
+        except Exception as e:  # noqa: BLE001
+            print(f"  ! crypto feed {url}: {e}", file=sys.stderr)
+    seen, deduped = set(), []
+    for h in out:
+        key = h["title"].lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(h)
+    deduped.sort(key=lambda h: h["age"])
+    return deduped[:limit]
+
+
 # ----------------------------------------------------------------------------
 # Rendering
 # ----------------------------------------------------------------------------
@@ -411,6 +476,16 @@ def headlines_html(items):
     return out + '<div style="margin-bottom:14px"></div>'
 
 
+def crypto_html(items):
+    if not items:
+        return '<div style="font-size:13px;color:#777">No institutional crypto-flow headlines today.</div>'
+    li = "".join(
+        f'<li style="margin-bottom:5px"><a href="{h["link"]}" style="color:#2c5fb3;text-decoration:none">{h["title"]}</a></li>'
+        for h in items
+    )
+    return f'<ul style="font-size:14px;margin:0 0 18px;padding-left:18px">{li}</ul>'
+
+
 def _eu_uk_first(rows):
     """Put FTSE 100 (UK) at the top of the European table for the Europe run."""
     return sorted(rows, key=lambda r: 0 if "FTSE" in r["name"] else 1)
@@ -428,9 +503,10 @@ def build_html(data, asof_label, session="us"):
         return f'<h3 style="{h3}">{title}</h3>{html}'
 
     news = sec("Market News — what moved things", headlines_html(data["news"]))
+    crypto = sec("Crypto — Institutional Flows", crypto_html(data["crypto"]))
     if session == "europe":
         title = "Europe &amp; UK Market Recap"
-        body = (news
+        body = (news + crypto
                 + sec("Europe &amp; UK (close)", index_table(_eu_uk_first(data["eu"])))
                 + sec("FX (EUR, GBP)", index_table(data["fx"]))
                 + sec("Rates", rates_table(data["rates"]))
@@ -438,7 +514,7 @@ def build_html(data, asof_label, session="us"):
                 + sec("US (prior close, reference)", index_table(data["us"])))
     else:
         title = "Market Recap"
-        body = (news
+        body = (news + crypto
                 + sec("US Indices (close)", index_table(data["us"]))
                 + sec("Europe (close)", index_table(data["eu"]))
                 + sec("FX", index_table(data["fx"]))
@@ -466,6 +542,14 @@ def build_text(data, asof_label, session="us"):
                 lines.append(f"    - {h['title']} ({h['link']})")
     else:
         lines.append("  No market headlines retrieved.")
+    lines.append("")
+
+    lines.append("CRYPTO — INSTITUTIONAL FLOWS")
+    if data["crypto"]:
+        for h in data["crypto"]:
+            lines.append(f"  - {h['title']} ({h['link']})")
+    else:
+        lines.append("  No institutional crypto-flow headlines today.")
     lines.append("")
 
     def block(heading, rows, rate=False):
@@ -548,6 +632,7 @@ def main():
         "rates": collect(RATES),
         "commodities": collect(COMMODITIES),
         "news": fetch_headlines(limit=45),
+        "crypto": fetch_crypto_flows(limit=8),
     }
 
     # Sanity guard: if the data source is fully down (every quote n/a), fail the
