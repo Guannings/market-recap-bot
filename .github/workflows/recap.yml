@@ -2,10 +2,18 @@ name: Market Recap Email
 
 on:
   schedule:
-    # GitHub Actions cron is UTC. 7:30am GMT+8 = 23:30 UTC the prior day.
-    # 23:30 UTC Mon–Fri => 7:30am GMT+8 Tue–Sat (recaps each US close).
+    # GitHub Actions cron is UTC.
+    # 23:30 UTC Mon–Fri  => 7:30am GMT+8 Tue–Sat : full recap after the US close.
     - cron: "30 23 * * 1-5"
-  workflow_dispatch:   # lets you run it manually from the Actions tab
+    # 17:00 UTC Mon–Fri  => 1:00am GMT+8 next day : UK/Europe recap after Europe close.
+    - cron: "0 17 * * 1-5"
+  workflow_dispatch:   # manual run from the Actions tab; pick which session
+    inputs:
+      session:
+        description: "Which session to send"
+        type: choice
+        options: ["us", "europe"]
+        default: "us"
 
 # Lets the keepalive step push a tiny commit (resets the 60-day auto-disable timer).
 permissions:
@@ -25,7 +33,17 @@ jobs:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
-        run: python market_recap.py
+        run: |
+          SESSION="${{ github.event.inputs.session }}"
+          if [ -z "$SESSION" ]; then
+            if [ "${{ github.event.schedule }}" = "0 17 * * 1-5" ]; then
+              SESSION="europe"
+            else
+              SESSION="us"
+            fi
+          fi
+          echo "Running session: $SESSION"
+          python market_recap.py --session "$SESSION"
 
       # Keepalive: GitHub disables scheduled workflows after 60 days with no repo
       # activity. This pushes a tiny commit only when the last commit is >45 days
