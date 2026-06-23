@@ -7,11 +7,9 @@ on:
     - cron: "30 23 * * 1-5"
   workflow_dispatch:   # lets you run it manually from the Actions tab
 
-# Needed so the keepalive step can push a tiny commit that resets the
-# "60 days inactivity" timer GitHub uses to auto-disable scheduled workflows.
+# Lets the keepalive step push a tiny commit (resets the 60-day auto-disable timer).
 permissions:
   contents: write
-  actions: write
 
 jobs:
   send-recap:
@@ -29,7 +27,21 @@ jobs:
           RECIPIENTS: ${{ secrets.RECIPIENTS }}
         run: python market_recap.py
 
-      # Keeps the scheduled workflow from being auto-disabled after 60 days.
-      # It makes a small automatic commit when the repo is close to going stale.
-      - name: Keepalive
-        uses: gautamkrishnar/keepalive-workflow@v2
+      # Keepalive: GitHub disables scheduled workflows after 60 days with no repo
+      # activity. This pushes a tiny commit only when the last commit is >45 days
+      # old, which resets that timer. Plain shell (no third-party action), so it
+      # is never subject to the "allowed actions" policy.
+      - name: Keepalive (prevent 60-day auto-disable)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          LAST=$(git log -1 --format=%ct)
+          AGE_DAYS=$(( ( $(date +%s) - LAST ) / 86400 ))
+          if [ "$AGE_DAYS" -ge 45 ]; then
+            date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive
+            git add .keepalive
+            git commit -m "keepalive: keep scheduled workflow active"
+            git push
+          else
+            echo "Last commit was $AGE_DAYS days ago — no keepalive needed yet."
+          fi
