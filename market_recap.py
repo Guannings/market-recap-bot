@@ -532,6 +532,7 @@ def send_email(subject, text_body, html_body):
 
 # ----------------------------------------------------------------------------
 def main():
+    raise SystemExit('TEST: forced failure to verify Copilot auto-fix loop')
     ap = argparse.ArgumentParser(description="Email a EU+US market recap.")
     ap.add_argument("--dry-run", action="store_true", help="print instead of sending")
     ap.add_argument("--save", metavar="PATH", help="also write the HTML body to PATH")
