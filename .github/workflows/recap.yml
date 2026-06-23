@@ -22,13 +22,14 @@ permissions:
 jobs:
   send-recap:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - name: Send recap
+      - name: Send recap (with retries)
         env:
           GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
           GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
@@ -43,7 +44,39 @@ jobs:
             fi
           fi
           echo "Running session: $SESSION"
-          python market_recap.py --session "$SESSION"
+          n=0
+          until [ $n -ge 3 ]; do
+            python market_recap.py --session "$SESSION" && exit 0
+            n=$((n+1))
+            echo "Attempt $n failed; retrying in 60s..."
+            sleep 60
+          done
+          echo "All attempts failed."
+          exit 1
+
+      # If the recap failed after all retries, email you a short alert so you
+      # always know — instead of just silently getting no recap.
+      - name: Alert on failure
+        if: failure()
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+        run: |
+          python - <<'PY'
+          import os, smtplib
+          from email.mime.text import MIMEText
+          s = os.environ["GMAIL_ADDRESS"]; pw = os.environ["GMAIL_APP_PASSWORD"]
+          to = [x.strip() for x in os.environ.get("RECIPIENTS", s).split(",") if x.strip()]
+          run = "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          m = MIMEText("Your market recap workflow failed today after 3 attempts.\n\n"
+                       "It will try again on the next schedule. View the logs:\n" + run)
+          m["Subject"] = "⚠️ Market Recap FAILED — check the run"
+          m["From"] = s; m["To"] = ", ".join(to)
+          with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as srv:
+              srv.login(s, pw); srv.sendmail(s, to, m.as_string())
+          print("Failure alert sent.")
+          PY
 
       # Keepalive: GitHub disables scheduled workflows after 60 days with no repo
       # activity. This pushes a tiny commit only when the last commit is >45 days

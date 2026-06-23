@@ -1,0 +1,47 @@
+name: Auto-fix on failure
+
+# When the recap workflow fails, automatically open an issue assigned to the
+# Copilot coding agent so it investigates and opens a fix PR — no clicks needed.
+on:
+  workflow_run:
+    workflows: ["Market Recap Email"]
+    types: [completed]
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  ask-copilot:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open a Copilot issue with the failure
+        env:
+          # Prefer a PAT (AUTOFIX_PAT) so the assignment reliably triggers the
+          # Copilot agent; fall back to the default token if no PAT is set.
+          GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          REPO: ${{ github.repository }}
+        run: |
+          BODY=$(cat <<EOF
+          The scheduled **Market Recap Email** workflow failed.
+
+          Failed run (logs): $RUN_URL
+
+          @copilot please investigate the failure, fix the root cause in
+          \`market_recap.py\` and/or \`.github/workflows/recap.yml\`, and open a
+          pull request. Keep existing behavior and the source policy intact
+          (no China outlets, no X/Twitter as a source, no Grok/xAI content, no
+          content farms). The fix must pass the \`validate\` checks.
+          EOF
+          )
+          # Try assigning the Copilot agent; if that handle isn't accepted,
+          # still create the issue (the @copilot mention can start it).
+          gh issue create --repo "$REPO" \
+            --title "Auto-fix: Market Recap workflow failed" \
+            --body "$BODY" \
+            --assignee "copilot-swe-agent[bot]" \
+          || gh issue create --repo "$REPO" \
+            --title "Auto-fix: Market Recap workflow failed" \
+            --body "$BODY"

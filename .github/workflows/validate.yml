@@ -1,0 +1,48 @@
+name: validate
+
+# Safety gate: every PR (including Copilot's auto-fix PRs) must pass this before
+# it can merge. Runs the bot in --dry-run (no email sent, no secrets needed), so
+# a fix that doesn't even run can never reach your live bot.
+on:
+  pull_request:
+    paths:
+      - "market_recap.py"
+      - "requirements.txt"
+      - ".github/workflows/**"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Syntax check
+        run: python -c "import ast; ast.parse(open('market_recap.py').read())"
+      - name: Smoke test — US session (no email sent)
+        run: python market_recap.py --dry-run
+      - name: Smoke test — Europe session (no email sent)
+        run: python market_recap.py --session europe --dry-run
+
+  # If the PR is from the Copilot agent and validation passed, merge it
+  # automatically — fully hands-off.
+  automerge-copilot:
+    needs: validate
+    runs-on: ubuntu-latest
+    if: >-
+      ${{ contains(github.event.pull_request.user.login, 'copilot') ||
+          contains(github.event.pull_request.user.login, 'Copilot') }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Squash-merge the validated Copilot PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge ${{ github.event.pull_request.number }} --squash --repo ${{ github.repository }}

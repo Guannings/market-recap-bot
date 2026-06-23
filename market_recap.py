@@ -151,18 +151,28 @@ def _blocked(text: str) -> bool:
 # ----------------------------------------------------------------------------
 # Market data
 # ----------------------------------------------------------------------------
-def fetch_quote(ticker: str):
-    """Return (last_close, prev_close, as_of_date) or (None, None, None)."""
+def fetch_quote(ticker: str, retries: int = 3):
+    """Return (last_close, prev_close, as_of_date) or (None, None, None).
+    Retries a few times because Yahoo occasionally returns empty/ratelimited."""
+    import time as _time
     try:
         import yfinance as yf
-        hist = yf.Ticker(ticker).history(period="7d", interval="1d")
-        closes = hist["Close"].dropna()
-        if len(closes) >= 2:
-            return float(closes.iloc[-1]), float(closes.iloc[-2]), closes.index[-1].date()
-        if len(closes) == 1:
-            return float(closes.iloc[-1]), None, closes.index[-1].date()
     except Exception as e:  # noqa: BLE001
-        print(f"  ! {ticker}: {e}", file=sys.stderr)
+        print(f"  ! yfinance import failed: {e}", file=sys.stderr)
+        return None, None, None
+    for attempt in range(1, retries + 1):
+        try:
+            hist = yf.Ticker(ticker).history(period="7d", interval="1d")
+            closes = hist["Close"].dropna()
+            if len(closes) >= 2:
+                return float(closes.iloc[-1]), float(closes.iloc[-2]), closes.index[-1].date()
+            if len(closes) == 1:
+                return float(closes.iloc[-1]), None, closes.index[-1].date()
+            # empty result -> retry
+        except Exception as e:  # noqa: BLE001
+            if attempt == retries:
+                print(f"  ! {ticker}: {e}", file=sys.stderr)
+        _time.sleep(1.5 * attempt)
     return None, None, None
 
 
@@ -504,10 +514,20 @@ def send_email(subject, text_body, html_body):
     msg.attach(MIMEText(text_body, "plain", "utf-8"))
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-        server.login(sender, app_pw)
-        server.sendmail(sender, to_list, msg.as_string())
-    print(f"Sent to: {', '.join(to_list)}")
+    import time as _time
+    last_err = None
+    for attempt in range(1, 4):  # retry transient SMTP/network failures
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as server:
+                server.login(sender, app_pw)
+                server.sendmail(sender, to_list, msg.as_string())
+            print(f"Sent to: {', '.join(to_list)}")
+            return
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"  ! send attempt {attempt} failed: {e}", file=sys.stderr)
+            _time.sleep(5 * attempt)
+    raise SystemExit(f"Email send failed after retries: {last_err}")
 
 
 # ----------------------------------------------------------------------------
@@ -529,6 +549,13 @@ def main():
         "commodities": collect(COMMODITIES),
         "news": fetch_headlines(limit=45),
     }
+
+    # Sanity guard: if the data source is fully down (every quote n/a), fail the
+    # run so the workflow's failure alert fires instead of sending an empty email.
+    quote_groups = ("us", "eu", "fx", "rates", "commodities")
+    got = sum(1 for g in quote_groups for r in data[g] if r["last"] is not None)
+    if got == 0:
+        raise SystemExit("All market data came back empty — aborting so the alert fires.")
 
     # Date label: Europe run keys off EU data; US run keys off US data.
     if args.session == "europe":
