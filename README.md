@@ -121,6 +121,16 @@ $$\Delta_{\text{bps}} = \left(y_{\text{close}} - y_{\text{prev}}\right) \times 1
 
 ====================================================================================
 
+# **🛠️ Development Methodology**
+
+**The system design — regional news classification, the source-integrity policy, the two-session (US / UK-Europe) scheduling model, and the self-healing CI repair loop — was conceptualized and architected by the author.**
+
+This project was built using an AI-Accelerated Workflow.
+
+Large Language Models were used to accelerate syntax generation and boilerplate implementation, keeping the focus on the engineering decisions that define the project: operational reliability (retries, graceful degradation, and failure alerting over silent breakage), the safety boundaries of the automated repair loop (a validated, gated auto-merge rather than blind self-modification of a credential-holding service), and the editorial rules governing which sources and stories are admitted into the recap.
+
+====================================================================================
+
 # **⚠️ Disclaimer and Terms of Use**
 
 **1. Educational Purpose Only**
