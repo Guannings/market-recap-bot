@@ -5,6 +5,7 @@ name: validate
 # a fix that doesn't even run can never reach your live bot.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "market_recap.py"
       - "requirements.txt"
@@ -43,6 +44,12 @@ jobs:
       pull-requests: write
     steps:
       - name: Squash-merge the validated Copilot PR
+        # Use the PAT, not GITHUB_TOKEN: runs triggered by a bot's PR get a
+        # read-only default token, which can't perform the merge.
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh pr merge ${{ github.event.pull_request.number }} --squash --repo ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.AUTOFIX_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          REPO=${{ github.repository }}
+          gh pr ready "$PR" --repo "$REPO" || true   # un-draft if still a draft
+          gh pr merge "$PR" --squash --repo "$REPO"
