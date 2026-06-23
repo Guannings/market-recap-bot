@@ -1,0 +1,35 @@
+name: Market Recap Email
+
+on:
+  schedule:
+    # GitHub Actions cron is UTC. 7:30am GMT+8 = 23:30 UTC the prior day.
+    # 23:30 UTC Mon–Fri => 7:30am GMT+8 Tue–Sat (recaps each US close).
+    - cron: "30 23 * * 1-5"
+  workflow_dispatch:   # lets you run it manually from the Actions tab
+
+# Needed so the keepalive step can push a tiny commit that resets the
+# "60 days inactivity" timer GitHub uses to auto-disable scheduled workflows.
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  send-recap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - name: Send recap
+        env:
+          GMAIL_ADDRESS: ${{ secrets.GMAIL_ADDRESS }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENTS: ${{ secrets.RECIPIENTS }}
+        run: python market_recap.py
+
+      # Keeps the scheduled workflow from being auto-disabled after 60 days.
+      # It makes a small automatic commit when the repo is close to going stale.
+      - name: Keepalive
+        uses: gautamkrishnar/keepalive-workflow@v2

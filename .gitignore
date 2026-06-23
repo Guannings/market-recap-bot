@@ -1,0 +1,8 @@
+# Never commit your secrets
+.env
+
+# Python noise
+__pycache__/
+*.pyc
+recap.log
+out.html
