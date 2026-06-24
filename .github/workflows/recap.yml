@@ -54,6 +54,20 @@ jobs:
           echo "All attempts failed."
           exit 1
 
+      # Persist the de-dup memory so the next recap skips stories already sent.
+      - name: Persist sent-news state
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet -- .sent_news.json; then
+            git add .sent_news.json
+            git commit -m "state: update sent-news de-dup [skip ci]"
+            git push
+          else
+            echo "No state change to commit."
+          fi
+
       # If the recap failed after all retries, email you a short alert so you
       # always know — instead of just silently getting no recap.
       - name: Alert on failure

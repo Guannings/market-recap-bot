@@ -375,6 +375,44 @@ def fetch_headlines(limit=8):
     return deduped[:limit]
 
 
+# ----------------------------------------------------------------------------
+# Cross-run de-dup: remember recently-sent headlines so the EU and US emails
+# (and day-to-day runs) don't repeat the same stories. State lives in a small
+# committed JSON file; the workflow commits it after each send.
+# ----------------------------------------------------------------------------
+STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sent_news.json")
+SENT_WINDOW_HOURS = 36
+
+
+def _key(h):
+    return h.get("link") or h.get("title", "")
+
+
+def load_sent(window_hours=SENT_WINDOW_HOURS):
+    import json
+    import time as _time
+    try:
+        with open(STATE_PATH) as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    cutoff = _time.time() - window_hours * 3600
+    return {k: v for k, v in data.items() if isinstance(v, (int, float)) and v >= cutoff}
+
+
+def save_sent(sent):
+    import json
+    try:
+        with open(STATE_PATH, "w") as f:
+            json.dump(sent, f, indent=0)
+    except Exception as e:  # noqa: BLE001
+        print(f"  ! could not save sent-state: {e}", file=sys.stderr)
+
+
+def drop_seen(items, sent):
+    return [h for h in items if _key(h) not in sent]
+
+
 def fetch_crypto_flows(limit=8, max_age_hours=72):
     """Headlines about what institutions are doing in crypto: ETF in/outflows,
     treasury/corporate BTC buys, fund allocations — NOT price action."""
@@ -467,7 +505,7 @@ def rates_table(rows):
 
 def headlines_html(items):
     if not items:
-        return '<div style="font-size:13px;color:#777">No market headlines retrieved.</div>'
+        return '<div style="font-size:13px;color:#777">No new market headlines since the last recap.</div>'
     out = ""
     for region, group in group_news(items):
         li = "".join(
@@ -484,7 +522,7 @@ def headlines_html(items):
 
 def crypto_html(items):
     if not items:
-        return '<div style="font-size:13px;color:#777">No institutional crypto-flow headlines today.</div>'
+        return '<div style="font-size:13px;color:#777">No new institutional crypto-flow headlines since the last recap.</div>'
     li = "".join(
         f'<li style="margin-bottom:5px"><a href="{h["link"]}" style="color:#2c5fb3;text-decoration:none">{h["title"]}</a></li>'
         for h in items
@@ -547,7 +585,7 @@ def build_text(data, asof_label, session="us"):
             for h in group:
                 lines.append(f"    - {h['title']} ({h['link']})")
     else:
-        lines.append("  No market headlines retrieved.")
+        lines.append("  No new market headlines since the last recap.")
     lines.append("")
 
     lines.append("CRYPTO — INSTITUTIONAL FLOWS")
@@ -555,7 +593,7 @@ def build_text(data, asof_label, session="us"):
         for h in data["crypto"]:
             lines.append(f"  - {h['title']} ({h['link']})")
     else:
-        lines.append("  No institutional crypto-flow headlines today.")
+        lines.append("  No new institutional crypto-flow headlines since the last recap.")
     lines.append("")
 
     def block(heading, rows, rate=False):
@@ -648,6 +686,12 @@ def main():
     if got == 0:
         raise SystemExit("All market data came back empty — aborting so the alert fires.")
 
+    # Drop anything already sent in a recent recap (e.g. the earlier EU email),
+    # so the two daily emails don't repeat the same stories.
+    sent = load_sent()
+    data["news"] = drop_seen(data["news"], sent)
+    data["crypto"] = drop_seen(data["crypto"], sent)
+
     # Date label: Europe run keys off EU data; US run keys off US data.
     if args.session == "europe":
         asof = next((r["asof"] for r in data["eu"] if r["asof"]), dt.date.today())
@@ -668,10 +712,17 @@ def main():
 
     if args.dry_run:
         print("\n" + text)
-        print("\n[dry-run] Email not sent.")
+        print("\n[dry-run] Email not sent. (state file unchanged)")
         return
 
     send_email(subject, text, html)
+
+    # Record what we just sent so the next recap can skip it.
+    import time as _time
+    now = _time.time()
+    for h in data["news"] + data["crypto"]:
+        sent[_key(h)] = now
+    save_sent(sent)
 
 
 if __name__ == "__main__":
