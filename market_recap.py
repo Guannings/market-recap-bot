@@ -94,6 +94,9 @@ NEWS_FEEDS = [
     "https://feeds.bbci.co.uk/news/business/companies/rss.xml",# BBC Companies
     "https://www.theguardian.com/uk/business/rss",             # Guardian Business
     "https://www.theguardian.com/business/economics/rss",      # Guardian Economics
+    "https://rss.dw.com/rdf/rss-en-bus",                       # Deutsche Welle Business (Germany)
+    "https://www.france24.com/en/business/rss",               # France24 Business (France)
+    "https://www.cnbc.com/id/19794221/device/rss/rss.html",    # CNBC Europe
 ]
 
 # Reputable crypto desks for the institutional-flows section.
@@ -255,6 +258,14 @@ REGION_KEYWORDS = {
 REGION_ORDER = ["Global", "United States", "United Kingdom", "Europe",
                 "Japan & Korea", "Middle East", "Australia", "Other"]
 
+# Which regions each email focuses on, so the EU email isn't full of US stories
+# and the US email isn't starved. "Global" + "Middle East" (macro/oil) show in both.
+SESSION_REGIONS = {
+    "europe": ["Global", "United Kingdom", "Europe", "Middle East"],
+    "us": ["Global", "United States", "Japan & Korea", "Australia",
+           "Middle East", "Other"],
+}
+
 # Major companies -> home region, used when a headline names a firm but no
 # country. Keep names distinctive to avoid false matches.
 COMPANY_REGION = {
@@ -384,8 +395,11 @@ STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sent_new
 SENT_WINDOW_HOURS = 36
 
 
-def _key(h):
-    return h.get("link") or h.get("title", "")
+def _key(h, session=""):
+    base = h.get("link") or h.get("title", "")
+    # Session-qualified so the EU run only de-dups against past EU emails and the
+    # US run against past US emails — the two emails never starve each other.
+    return f"{session}|{base}" if session else base
 
 
 def load_sent(window_hours=SENT_WINDOW_HOURS):
@@ -409,8 +423,8 @@ def save_sent(sent):
         print(f"  ! could not save sent-state: {e}", file=sys.stderr)
 
 
-def drop_seen(items, sent):
-    return [h for h in items if _key(h) not in sent]
+def drop_seen(items, sent, session=""):
+    return [h for h in items if _key(h, session) not in sent]
 
 
 def fetch_crypto_flows(limit=8, max_age_hours=72):
@@ -686,11 +700,16 @@ def main():
     if got == 0:
         raise SystemExit("All market data came back empty — aborting so the alert fires.")
 
-    # Drop anything already sent in a recent recap (e.g. the earlier EU email),
-    # so the two daily emails don't repeat the same stories.
+    # Scope the news to this email's regions (EU email = UK/Europe/Global, etc.)
+    # so the EU email isn't full of US stories and the US email keeps its US news.
+    allowed = SESSION_REGIONS[args.session]
+    data["news"] = [h for h in data["news"] if classify_region(h["title"]) in allowed]
+
+    # Drop anything already sent in a recent recap of THIS session, so day-to-day
+    # repeats are removed without the EU run consuming the US run's stories.
     sent = load_sent()
-    data["news"] = drop_seen(data["news"], sent)
-    data["crypto"] = drop_seen(data["crypto"], sent)
+    data["news"] = drop_seen(data["news"], sent, args.session)
+    data["crypto"] = drop_seen(data["crypto"], sent, args.session)
 
     # Date label: Europe run keys off EU data; US run keys off US data.
     if args.session == "europe":
@@ -721,7 +740,7 @@ def main():
     import time as _time
     now = _time.time()
     for h in data["news"] + data["crypto"]:
-        sent[_key(h)] = now
+        sent[_key(h, args.session)] = now
     save_sent(sent)
 
 
