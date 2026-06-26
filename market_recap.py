@@ -402,11 +402,12 @@ STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".sent_new
 SENT_WINDOW_HOURS = 36
 
 
-def _key(h, session=""):
-    base = h.get("link") or h.get("title", "")
-    # Session-qualified so the EU run only de-dups against past EU emails and the
-    # US run against past US emails — the two emails never starve each other.
-    return f"{session}|{base}" if session else base
+def _key(h):
+    # Global de-dup key (not session-qualified): a story shown in the EU email is
+    # suppressed in the US email so the two don't repeat. Region scoping (below)
+    # is what keeps the US email from being starved — US stories are never in the
+    # EU email to begin with, so global de-dup can't drain them.
+    return h.get("link") or h.get("title", "")
 
 
 def load_sent(window_hours=SENT_WINDOW_HOURS):
@@ -430,8 +431,8 @@ def save_sent(sent):
         print(f"  ! could not save sent-state: {e}", file=sys.stderr)
 
 
-def drop_seen(items, sent, session=""):
-    return [h for h in items if _key(h, session) not in sent]
+def drop_seen(items, sent):
+    return [h for h in items if _key(h) not in sent]
 
 
 def fetch_crypto_flows(limit=8, max_age_hours=72):
@@ -714,11 +715,11 @@ def main():
     allowed = SESSION_REGIONS[args.session]
     data["news"] = [h for h in data["news"] if classify_region(h["title"]) in allowed]
 
-    # Drop anything already sent in a recent recap of THIS session, so day-to-day
-    # repeats are removed without the EU run consuming the US run's stories.
+    # Drop anything already sent in a recent recap (incl. the earlier EU email),
+    # so the EU and US emails never repeat the same story.
     sent = load_sent()
-    data["news"] = drop_seen(data["news"], sent, args.session)
-    data["crypto"] = drop_seen(data["crypto"], sent, args.session)
+    data["news"] = drop_seen(data["news"], sent)
+    data["crypto"] = drop_seen(data["crypto"], sent)
 
     # Date label: Europe run keys off EU data; US run keys off US data.
     if args.session == "europe":
@@ -749,7 +750,7 @@ def main():
     import time as _time
     now = _time.time()
     for h in data["news"] + data["crypto"]:
-        sent[_key(h, args.session)] = now
+        sent[_key(h)] = now
     save_sent(sent)
 
 
