@@ -97,6 +97,8 @@ NEWS_FEEDS = [
     "https://rss.dw.com/rdf/rss-en-bus",                       # Deutsche Welle Business (Germany)
     "https://www.france24.com/en/business/rss",               # France24 Business (France)
     "https://www.cnbc.com/id/19794221/device/rss/rss.html",    # CNBC Europe
+    "https://www.theguardian.com/business/eurozone/rss",       # Guardian Eurozone (ECB/euro)
+    "https://www.euractiv.com/feed/",                          # Euractiv (EU policy/economy)
 ]
 
 # Reputable crypto desks for the institutional-flows section.
@@ -162,6 +164,7 @@ JUNK_PATTERNS = [
     "best stock", "top stock", "is it too late", "here's why you should",
     "motley", "could make you", "millionaire", "price target", "analysts say",
     "reasons to", "things to know", "stocks to watch", "is a buy", "buy rating",
+    "advocacy lab", "sponsored", "advertorial", "[promoted", "[partner",
 ]
 
 # Market-wrap / live-blog patterns to surface FIRST (these explain the day).
@@ -258,11 +261,12 @@ REGION_KEYWORDS = {
 REGION_ORDER = ["Global", "United States", "United Kingdom", "Europe",
                 "Japan & Korea", "Middle East", "Australia", "Other"]
 
-# Which regions each email focuses on, so the EU email isn't full of US stories
-# and the US email isn't starved. "Global" + "Middle East" (macro/oil) show in both.
+# Which regions each email shows AND in what order (top = highest priority), so
+# the EU email leads with Europe and the US email leads with the US. "Global" +
+# "Middle East" (macro/oil) appear in both, but below the home regions.
 SESSION_REGIONS = {
-    "europe": ["Global", "United Kingdom", "Europe", "Middle East"],
-    "us": ["Global", "United States", "Japan & Korea", "Australia",
+    "europe": ["Europe", "United Kingdom", "Global", "Middle East"],
+    "us": ["United States", "Global", "Japan & Korea", "Australia",
            "Middle East", "Other"],
 }
 
@@ -307,12 +311,15 @@ def classify_region(title: str) -> str:
     return "Other"
 
 
-def group_news(items):
-    """Return [(region, [items])] in REGION_ORDER, only non-empty groups."""
+def group_news(items, order=None):
+    """Return [(region, [items])] in the given order, only non-empty groups."""
+    order = order or REGION_ORDER
     buckets = {}
     for h in items:
         buckets.setdefault(classify_region(h["title"]), []).append(h)
-    return [(r, buckets[r]) for r in REGION_ORDER if r in buckets]
+    # listed regions first (in order), then any leftover regions
+    seen = list(order) + [r for r in REGION_ORDER if r not in order]
+    return [(r, buckets[r]) for r in seen if r in buckets]
 
 
 def _word_hit(text: str, terms) -> bool:
@@ -517,11 +524,11 @@ def rates_table(rows):
     )
 
 
-def headlines_html(items):
+def headlines_html(items, order=None):
     if not items:
         return '<div style="font-size:13px;color:#777">No new market headlines since the last recap.</div>'
     out = ""
-    for region, group in group_news(items):
+    for region, group in group_news(items, order):
         li = "".join(
             f'<li style="margin-bottom:5px"><a href="{h["link"]}" style="color:#2c5fb3;text-decoration:none">{h["title"]}</a></li>'
             for h in group
@@ -560,7 +567,8 @@ def build_html(data, asof_label, session="us"):
     def sec(title, html):
         return f'<h3 style="{h3}">{title}</h3>{html}'
 
-    news = sec("Market News — what moved things", headlines_html(data["news"]))
+    order = SESSION_REGIONS.get(session, REGION_ORDER)
+    news = sec("Market News — what moved things", headlines_html(data["news"], order))
     crypto = sec("Crypto — Institutional Flows", crypto_html(data["crypto"]))
     if session == "europe":
         title = "Europe &amp; UK Market Recap"
@@ -592,9 +600,10 @@ def build_html(data, asof_label, session="us"):
 def build_text(data, asof_label, session="us"):
     title = "EUROPE & UK MARKET RECAP" if session == "europe" else "MARKET RECAP"
     lines = [f"{title} — {asof_label}", ""]
+    order = SESSION_REGIONS.get(session, REGION_ORDER)
     lines.append("MARKET NEWS — what moved things")
     if data["news"]:
-        for region, group in group_news(data["news"]):
+        for region, group in group_news(data["news"], order):
             lines.append(f"  [{region}]")
             for h in group:
                 lines.append(f"    - {h['title']} ({h['link']})")
