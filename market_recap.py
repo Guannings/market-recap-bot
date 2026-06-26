@@ -270,6 +270,10 @@ SESSION_REGIONS = {
            "Middle East", "Other"],
 }
 
+# Per-region caps so low-priority buckets can't dominate. Home regions (US, UK,
+# Europe) are uncapped; shared macro and the catch-all "Other" are limited.
+REGION_CAPS = {"Global": 5, "Middle East": 3, "Other": 4}
+
 # Major companies -> home region, used when a headline names a firm but no
 # country. Keep names distinctive to avoid false matches.
 COMPANY_REGION = {
@@ -720,6 +724,18 @@ def main():
     sent = load_sent()
     data["news"] = drop_seen(data["news"], sent)
     data["crypto"] = drop_seen(data["crypto"], sent)
+
+    # Cap low-priority buckets (macro, Other) so home-region news dominates.
+    counts, kept = {}, []
+    for h in data["news"]:
+        r = classify_region(h["title"])
+        cap = REGION_CAPS.get(r)
+        if cap is not None:
+            counts[r] = counts.get(r, 0) + 1
+            if counts[r] > cap:
+                continue
+        kept.append(h)
+    data["news"] = kept
 
     # Date label: Europe run keys off EU data; US run keys off US data.
     if args.session == "europe":
