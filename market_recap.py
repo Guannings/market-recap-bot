@@ -45,7 +45,13 @@ BLOCKED_SOURCE_SUBSTRINGS = [
     "scmp.com", "caixin", "yicai", "sina.com", "163.com", "qq.com",
     # common content farms / low-quality aggregators
     "msn.com", "benzinga", "zacks", "fool.com", "marketbeat",
-    "investorplace", "tipranks", "simplywall",
+    "investorplace", "tipranks", "simplywall", "247wallst", "gurufocus",
+    "investorsobserver", "valuewalk", "stocknews", "wallstreetzen",
+    "smartkarma", "insidermonkey", "stocktwits", "wallstreetsurvivor",
+    # crypto content mills (reputable crypto = The Block, Decrypt, CoinDesk, BTC Mag)
+    "finbold", "cryptopotato", "u.today", "bitcoinist", "newsbtc",
+    "coinspeaker", "ambcrypto", "beincrypto", "cryptoslate", "dailyhodl",
+    "coingape", "watcher.guru", "cryptonews", "crypto.news", "coinpedia",
     # opinion/commentary columns (not market news reporting)
     "commentisfree", "/opinion/", "/opinion-", "/columnists/",
 ]
@@ -101,7 +107,34 @@ NEWS_FEEDS = [
     "https://www.cnbc.com/id/19794221/device/rss/rss.html",    # CNBC Europe
     "https://www.theguardian.com/business/eurozone/rss",       # Guardian Eurozone (ECB/euro)
     "https://www.euractiv.com/feed/",                          # Euractiv (EU policy/economy)
+    "https://www.ecb.europa.eu/rss/press.html",                # ECB official press (EU macro)
 ]
+
+# A feed's home region — used to place a story that has no geographic keyword of
+# its own (e.g. a BBC business story with no country named is almost always UK).
+FEED_REGION = {
+    "https://www.cnbc.com/id/20910258/device/rss/rss.html": "United States",
+    "https://www.cnbc.com/id/100003114/device/rss/rss.html": "United States",
+    "https://www.cnbc.com/id/10000664/device/rss/rss.html": "United States",
+    "https://www.cnbc.com/id/15839069/device/rss/rss.html": "United States",
+    "https://finance.yahoo.com/news/rssindex": "United States",
+    "https://feeds.bbci.co.uk/news/business/rss.xml": "United Kingdom",
+    "https://feeds.bbci.co.uk/news/business/economy/rss.xml": "United Kingdom",
+    "https://feeds.bbci.co.uk/news/business/companies/rss.xml": "United Kingdom",
+    "https://www.theguardian.com/uk/business/rss": "United Kingdom",
+    "https://www.theguardian.com/business/economics/rss": "United Kingdom",
+    "https://rss.dw.com/rdf/rss-en-bus": "Europe",
+    "https://www.france24.com/en/business/rss": "Europe",
+    "https://www.cnbc.com/id/19794221/device/rss/rss.html": "Europe",
+    "https://www.theguardian.com/business/eurozone/rss": "Europe",
+    "https://www.euractiv.com/feed/": "Europe",
+    "https://www.ecb.europa.eu/rss/press.html": "Europe",
+}
+
+# EU business desks we trust enough to keep even without an explicit market
+# keyword (they're business sections, so most content is relevant). Crime,
+# lifestyle, promo and crypto are still filtered out.
+TRUSTED_FEEDS = {u for u, r in FEED_REGION.items() if r == "Europe"}
 
 # Reputable crypto desks for the institutional-flows section.
 CRYPTO_FEEDS = [
@@ -147,6 +180,11 @@ MARKET_KEYWORDS = [
     "economy", "economic", "growth", "debt", "deficit", "bank", "banks",
     "banking", "investor", "investors", "selloff", "rally", "rout", "surge",
     "slump", "plunge", "soar", "soars", "dividend",
+    # broader business/econ/policy terms (helps catch EU + macro coverage)
+    "eurozone", "euro area", "antitrust", "regulator", "regulators",
+    "regulation", "exports", "imports", "trade deal", "trade pact", "subsidy",
+    "state aid", "bailout", "borrowing", "fiscal", "budget", "stimulus",
+    "layoffs", "job cuts", "factory", "manufacturing", "output", "demand",
 ]
 
 # Story types that are NOT market news even if a market word appears (crime,
@@ -157,6 +195,10 @@ NOISE_PATTERNS = [
     "assault", "rape", "abuse", "missing", "rescue", "wildfire", "earthquake",
     "flood", "hurricane", "heatwave", "weather", "football", "soccer", "match",
     "celebrity", "royal family", "wedding", "recipe", "holiday tips",
+    "tennis", "golf", "olympic", "nadal", "prize money", "pope", "migrants",
+    # pure military/geopolitics (not markets)
+    "airspace", "scrambles", "missile", "troops", "invasion", "shelling",
+    "massive strike", "warplane", "air strike", "airstrike", "media in turmoil",
 ]
 
 # Promotional / listicle / SEO patterns to drop (not real market news).
@@ -178,7 +220,7 @@ WRAP_PATTERNS = [
 ]
 
 # How far back a headline can be (hours) to count as "overnight / recent".
-NEWS_MAX_AGE_HOURS = 48
+NEWS_MAX_AGE_HOURS = 60
 
 
 def _blocked(text: str) -> bool:
@@ -272,9 +314,12 @@ SESSION_REGIONS = {
            "Middle East", "Other"],
 }
 
-# Per-region caps so low-priority buckets can't dominate. Home regions (US, UK,
-# Europe) are uncapped; shared macro and the catch-all "Other" are limited.
-REGION_CAPS = {"Global": 5, "Middle East": 3, "Other": 4}
+# Per-region caps so no bucket runs away. Home regions get generous caps; shared
+# macro and the catch-all "Other" are kept short.
+REGION_CAPS = {
+    "United States": 12, "United Kingdom": 10, "Europe": 12,
+    "Global": 5, "Middle East": 3, "Japan & Korea": 4, "Australia": 3, "Other": 4,
+}
 
 # Major companies -> home region, used when a headline names a firm but no
 # country. Keep names distinctive to avoid false matches.
@@ -300,16 +345,25 @@ COMPANY_REGION = {
 }
 
 
+# Real equity markets. Middle East is a secondary (oil/geopolitics) tag: a story
+# about the ECB that also mentions Iran should stay European, not become "Global".
+PRIMARY_REGIONS = {"United States", "United Kingdom", "Europe",
+                   "Japan & Korea", "Australia"}
+
+
 def classify_region(title: str) -> str:
     t = title.lower()
     if any(g in t for g in GLOBAL_KEYWORDS):
         return "Global"
     matched = [region for region, kws in REGION_KEYWORDS.items()
                if any(k in t for k in kws)]
-    if len(matched) == 1:
-        return matched[0]
-    if len(matched) > 1:          # spans several countries -> treat as global
+    primary = [r for r in matched if r in PRIMARY_REGIONS]
+    if len(primary) == 1:         # one real market (+ maybe Middle East context)
+        return primary[0]
+    if len(primary) > 1:          # spans several real markets -> global
         return "Global"
+    if matched:                   # only a secondary region (Middle East) matched
+        return matched[0]
     # No country named: fall back to the home region of any company mentioned.
     for region, firms in COMPANY_REGION.items():
         if any(f in t for f in firms):
@@ -317,12 +371,18 @@ def classify_region(title: str) -> str:
     return "Other"
 
 
+def region_of(h):
+    """The story's region, preferring the value computed at fetch time (which
+    includes the source-feed fallback) over re-classifying the title."""
+    return h.get("region") or classify_region(h["title"])
+
+
 def group_news(items, order=None):
     """Return [(region, [items])] in the given order, only non-empty groups."""
     order = order or REGION_ORDER
     buckets = {}
     for h in items:
-        buckets.setdefault(classify_region(h["title"]), []).append(h)
+        buckets.setdefault(region_of(h), []).append(h)
     # listed regions first (in order), then any leftover regions
     seen = list(order) + [r for r in REGION_ORDER if r not in order]
     return [(r, buckets[r]) for r in seen if r in buckets]
@@ -337,7 +397,7 @@ def _word_hit(text: str, terms) -> bool:
     return False
 
 
-def _is_market_news(title: str) -> bool:
+def _is_market_news(title: str, trusted: bool = False) -> bool:
     t = title.lower()
     if _word_hit(t, NOISE_PATTERNS):           # crime / accident / lifestyle
         return False
@@ -345,6 +405,8 @@ def _is_market_news(title: str) -> bool:
         return False
     if any(j in t for j in JUNK_PATTERNS):     # promotional / listicle
         return False
+    if trusted:                                # trusted EU desk — keep w/o keyword
+        return True
     return _word_hit(t, MARKET_KEYWORDS)
 
 
@@ -379,14 +441,17 @@ def fetch_headlines(limit=8):
                 src = getattr(getattr(entry, "source", None), "title", "") or feed_src
                 if not title or _blocked(link) or _blocked(src) or _blocked(title):
                     continue
-                if not _is_market_news(title):       # drop lifestyle / non-market items
+                if not _is_market_news(title, url in TRUSTED_FEEDS):  # relax gate for EU desks
                     continue
                 age = _entry_age_hours(entry)
                 if age is not None and age > NEWS_MAX_AGE_HOURS:  # drop stale items
                     continue
+                reg = classify_region(title)
+                if reg == "Other":            # no geo signal -> use the feed's home region
+                    reg = FEED_REGION.get(url, "Other")
                 out.append({"title": title, "link": link, "source": src,
                             "age": age if age is not None else 9e9,
-                            "wrap": _is_wrap(title)})
+                            "wrap": _is_wrap(title), "region": reg})
         except Exception as e:  # noqa: BLE001
             print(f"  ! feed {url}: {e}", file=sys.stderr)
     # de-dupe by title
@@ -707,7 +772,7 @@ def main():
         "fx": collect(FX),
         "rates": collect(RATES),
         "commodities": collect(COMMODITIES),
-        "news": fetch_headlines(limit=45),
+        "news": fetch_headlines(limit=90),
         "crypto": fetch_crypto_flows(limit=8),
     }
 
@@ -721,7 +786,7 @@ def main():
     # Scope the news to this email's regions (EU email = UK/Europe/Global, etc.)
     # so the EU email isn't full of US stories and the US email keeps its US news.
     allowed = SESSION_REGIONS[args.session]
-    data["news"] = [h for h in data["news"] if classify_region(h["title"]) in allowed]
+    data["news"] = [h for h in data["news"] if region_of(h) in allowed]
 
     # Drop anything already sent in a recent recap (incl. the earlier EU email),
     # so the EU and US emails never repeat the same story.
@@ -732,7 +797,7 @@ def main():
     # Cap low-priority buckets (macro, Other) so home-region news dominates.
     counts, kept = {}, []
     for h in data["news"]:
-        r = classify_region(h["title"])
+        r = region_of(h)
         cap = REGION_CAPS.get(r)
         if cap is not None:
             counts[r] = counts.get(r, 0) + 1
