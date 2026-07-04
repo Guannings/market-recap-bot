@@ -46,6 +46,8 @@ BLOCKED_SOURCE_SUBSTRINGS = [
     # common content farms / low-quality aggregators
     "msn.com", "benzinga", "zacks", "fool.com", "marketbeat",
     "investorplace", "tipranks", "simplywall",
+    # opinion/commentary columns (not market news reporting)
+    "commentisfree", "/opinion/", "/opinion-", "/columnists/",
 ]
 
 # ----------------------------------------------------------------------------
@@ -338,6 +340,8 @@ def _word_hit(text: str, terms) -> bool:
 def _is_market_news(title: str) -> bool:
     t = title.lower()
     if _word_hit(t, NOISE_PATTERNS):           # crime / accident / lifestyle
+        return False
+    if _word_hit(t, CRYPTO_ASSET_TERMS):       # crypto belongs ONLY in the crypto section
         return False
     if any(j in t for j in JUNK_PATTERNS):     # promotional / listicle
         return False
