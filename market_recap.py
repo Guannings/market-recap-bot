@@ -87,6 +87,17 @@ COMMODITIES = [
     ("Brent Crude", "BZ=F"),
     ("WTI Crude", "CL=F"),
 ]
+# Asia-Pacific closes hours before Europe/US, so these are the freshest "what
+# happened overnight" numbers in the morning US recap. (Index data only — the
+# no-China-outlets policy is about news SOURCES, not market data.)
+ASIA_INDICES = [
+    ("Nikkei 225 (Japan)", "^N225"),
+    ("Hang Seng (HK)", "^HSI"),
+    ("KOSPI (Korea)", "^KS11"),
+    ("TAIEX (Taiwan)", "^TWII"),
+    ("ASX 200 (Australia)", "^AXJO"),
+    ("Nifty 50 (India)", "^NSEI"),
+]
 
 NEWS_FEEDS = [
     # Major-media + finance feeds (reputable, non-blocked). Failures degrade gracefully.
@@ -209,6 +220,10 @@ JUNK_PATTERNS = [
     "motley", "could make you", "millionaire", "price target", "analysts say",
     "reasons to", "things to know", "stocks to watch", "is a buy", "buy rating",
     "advocacy lab", "sponsored", "advertorial", "[promoted", "[partner",
+    # Yahoo/aggregator auto-generated "Is X Stock Underperforming the S&P 500?"
+    # SEO templates — technically name an index but carry no market news.
+    "underperforming the", "outperforming the", "a good stock to own",
+    "worth buying", "worth watching", "what to know before",
 ]
 
 # Market-wrap / live-blog patterns to surface FIRST (these explain the day).
@@ -217,6 +232,37 @@ WRAP_PATTERNS = [
     "market wrap", "wall street", "as it happened", "markets live", "live:",
     "dow closes", "s&p closes", "nasdaq closes", "closing bell", "market recap",
     "stocks rise", "stocks fall", "stocks slip", "stocks jump",
+]
+
+# ----------------------------------------------------------------------------
+# Headline ranking. Instead of "market-wrap first, then newest", each kept
+# headline gets an importance score so the stories that actually move markets
+# (central-bank decisions, macro data, mega-cap news) rise to the top and the
+# generic filler sinks — regardless of which feed it came from.
+# ----------------------------------------------------------------------------
+# Highest-impact: monetary policy, macro data releases, big directional moves.
+HIGH_IMPACT_TERMS = [
+    "federal reserve", "fed", "fomc", "powell", "ecb", "lagarde", "boj",
+    "bank of england", "boe", "central bank", "rate cut", "rate hike",
+    "rate decision", "rate rise", "interest rate", "interest rates", "basis points",
+    "cpi", "inflation", "deflation", "ppi", "jobs report", "payrolls", "nonfarm",
+    "unemployment", "gdp", "recession", "tariff", "tariffs", "trade war",
+    "sanctions", "downgrade", "default", "debt ceiling", "crisis", "selloff",
+    "sell-off", "plunge", "crash", "rout", "slump", "record high", "all-time high",
+    "record low", "surge", "soar", "soars", "rally", "yields",
+]
+# Company- / sector-level news that's usually material.
+MED_IMPACT_TERMS = [
+    "earnings", "profit warning", "profit", "revenue", "guidance", "forecast",
+    "merger", "acquisition", "takeover", "buyout", "ipo", "layoffs", "job cuts",
+    "antitrust", "regulator", "lawsuit", "results", "buyback", "outlook",
+    "upgrade", "downgrades", "bankruptcy", "restructuring", "stake",
+]
+# Market-moving heavyweights: a headline naming one is likely to matter.
+BIGCAP_TERMS = [
+    "nvidia", "apple", "microsoft", "amazon", "alphabet", "google", "meta",
+    "tesla", "broadcom", "jpmorgan", "goldman", "berkshire", "asml", "tsmc",
+    "samsung", "aramco", "novo nordisk", "lvmh",
 ]
 
 # How far back a headline can be (hours) to count as "overnight / recent".
@@ -256,10 +302,48 @@ def fetch_quote(ticker: str, retries: int = 3):
     return None, None, None
 
 
-def collect(group):
+def fetch_quotes_batch(tickers):
+    """Fetch every ticker in ONE Yahoo request (fast, fewer rate-limit hits).
+    Returns {ticker: (last, prev, asof)} for those that came back; anything
+    missing is left out so the caller can retry it individually."""
+    out = {}
+    tickers = list(dict.fromkeys(tickers))  # de-dup, keep order
+    if not tickers:
+        return out
+    try:
+        import yfinance as yf
+    except Exception as e:  # noqa: BLE001
+        print(f"  ! yfinance import failed: {e}", file=sys.stderr)
+        return out
+    try:
+        df = yf.download(tickers, period="7d", interval="1d", group_by="ticker",
+                         progress=False, threads=True, auto_adjust=False)
+    except Exception as e:  # noqa: BLE001
+        print(f"  ! batch download failed: {e}", file=sys.stderr)
+        return out
+    for tk in tickers:
+        try:
+            # Multi-ticker download is column-multiindexed by ticker; a single
+            # ticker comes back flat.
+            closes = (df[tk]["Close"] if len(tickers) > 1 else df["Close"]).dropna()
+            if len(closes) >= 2:
+                out[tk] = (float(closes.iloc[-1]), float(closes.iloc[-2]), closes.index[-1].date())
+            elif len(closes) == 1:
+                out[tk] = (float(closes.iloc[-1]), None, closes.index[-1].date())
+        except Exception:  # noqa: BLE001
+            pass  # missing -> caller falls back to the per-ticker fetch
+    return out
+
+
+def collect(group, cache=None):
+    """Build rows for a group, using the batch `cache` when present and only
+    falling back to a slower per-ticker fetch for tickers the batch missed."""
     rows = []
     for name, ticker in group:
-        last, prev, asof = fetch_quote(ticker)
+        if cache and ticker in cache:
+            last, prev, asof = cache[ticker]
+        else:
+            last, prev, asof = fetch_quote(ticker)
         rows.append({"name": name, "ticker": ticker, "last": last, "prev": prev, "asof": asof})
     return rows
 
@@ -415,6 +499,59 @@ def _is_wrap(title: str) -> bool:
     return any(w in t for w in WRAP_PATTERNS)
 
 
+def _count_hits(text: str, terms) -> int:
+    """How many of `terms` appear as whole words/phrases in `text`."""
+    return sum(1 for kw in terms
+               if re.search(r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])", text))
+
+
+def score_headline(h) -> float:
+    """Importance score for ranking. Higher = more market-moving. Combines the
+    story type (a market-wrap explains the whole day), how many high/med-impact
+    and mega-cap terms it names, and a mild freshness bonus so ties break toward
+    the newer story."""
+    t = h["title"].lower()
+    score = 0.0
+    if h.get("wrap"):
+        score += 6.0                                  # market-wrap: explains the day
+    score += 3.0 * _count_hits(t, HIGH_IMPACT_TERMS)  # policy / macro / big moves
+    score += 1.5 * _count_hits(t, MED_IMPACT_TERMS)   # company-level material news
+    score += 1.0 * _count_hits(t, BIGCAP_TERMS)       # names a heavyweight
+    age = h.get("age", 9e9)
+    if age < 9e9:                                      # 0..2 bonus, fresher = higher
+        score += max(0.0, 2.0 * (1.0 - min(age, 48.0) / 48.0))
+    return score
+
+
+# Common filler words ignored when comparing two titles for near-duplication.
+_DUPE_STOPWORDS = {
+    "the", "a", "an", "of", "to", "in", "on", "for", "and", "as", "at", "is",
+    "its", "after", "over", "amid", "says", "say", "said", "with", "from", "by",
+    "up", "down", "new", "why", "how", "will", "could", "may", "his", "her",
+}
+
+
+def _title_tokens(title: str):
+    """Significant lowercase word tokens of a title (drops stopwords + short
+    words), used to detect the same story reported by different outlets."""
+    words = re.findall(r"[a-z0-9]+", title.lower())
+    return {w for w in words if len(w) > 2 and w not in _DUPE_STOPWORDS}
+
+
+def _near_dupe(a: set, b: set, thresh: float = 0.6, contain: float = 0.8) -> bool:
+    """True if two token sets are the same story. Two tests: high Jaccard overlap
+    (near-identical wording), OR near-containment — one headline's words almost
+    all appear in the other. Containment catches the common syndication case
+    'Wall Street closes higher' vs 'Wall Street closes higher after Fed decision'
+    that an exact-title match misses."""
+    if not a or not b:
+        return False
+    inter = len(a & b)
+    if inter / len(a | b) >= thresh:              # near-identical
+        return True
+    return inter / min(len(a), len(b)) >= contain  # one nearly contains the other
+
+
 def _entry_age_hours(entry):
     """Hours since publication, or None if no date is available."""
     import calendar
@@ -454,16 +591,20 @@ def fetch_headlines(limit=8):
                             "wrap": _is_wrap(title), "region": reg})
         except Exception as e:  # noqa: BLE001
             print(f"  ! feed {url}: {e}", file=sys.stderr)
-    # de-dupe by title
-    seen, deduped = set(), []
+    # Rank by importance (most market-moving first), then collapse near-duplicate
+    # stories keeping the highest-scored copy — so the same event reported by
+    # three outlets appears once, as its strongest headline.
     for h in out:
-        key = h["title"].lower()
-        if key not in seen:
-            seen.add(key)
-            deduped.append(h)
-    # market-wrap / live-blog stories first, then freshest
-    deduped.sort(key=lambda h: (0 if h["wrap"] else 1, h["age"]))
-    return deduped[:limit]
+        h["score"] = score_headline(h)
+    out.sort(key=lambda h: (-h["score"], h["age"]))
+    kept, kept_tokens = [], []
+    for h in out:
+        toks = _title_tokens(h["title"])
+        if any(_near_dupe(toks, kt) for kt in kept_tokens):
+            continue
+        kept.append(h)
+        kept_tokens.append(toks)
+    return kept[:limit]
 
 
 # ----------------------------------------------------------------------------
@@ -539,13 +680,14 @@ def fetch_crypto_flows(limit=8, max_age_hours=72):
                             "age": age if age is not None else 9e9})
         except Exception as e:  # noqa: BLE001
             print(f"  ! crypto feed {url}: {e}", file=sys.stderr)
-    seen, deduped = set(), []
+    out.sort(key=lambda h: h["age"])  # freshest first, then drop near-duplicates
+    deduped, kept_tokens = [], []
     for h in out:
-        key = h["title"].lower()
-        if key not in seen:
-            seen.add(key)
-            deduped.append(h)
-    deduped.sort(key=lambda h: h["age"])
+        toks = _title_tokens(h["title"])
+        if any(_near_dupe(toks, kt) for kt in kept_tokens):
+            continue
+        deduped.append(h)
+        kept_tokens.append(toks)
     return deduped[:limit]
 
 
@@ -566,6 +708,102 @@ def sign(v, suffix="%", nd=2):
     if v is None:
         return "n/a"
     return f"{'+' if v >= 0 else ''}{v:.{nd}f}{suffix}"
+
+
+# ----------------------------------------------------------------------------
+# TL;DR snapshot: a scannable one-liner of headline gauges + the day's biggest
+# movers, so the recap can be read at a glance before the detail below.
+# ----------------------------------------------------------------------------
+# (group, row-name, is-rate) for the handful of gauges each session leads with.
+SNAPSHOT_GAUGES = {
+    "us": [("us", "S&P 500", False), ("us", "Nasdaq Composite", False),
+           ("us", "Dow Jones", False), ("rates", "US 10Y Treasury", True),
+           ("commodities", "Brent Crude", False), ("commodities", "Gold", False)],
+    "europe": [("eu", "STOXX Europe 600", False), ("eu", "DAX (Germany)", False),
+               ("eu", "FTSE 100 (UK)", False), ("fx", "EUR/USD", False),
+               ("rates", "US 10Y Treasury", True), ("commodities", "Brent Crude", False)],
+}
+
+
+def _find_row(rows, name):
+    return next((r for r in rows if r["name"] == name), None)
+
+
+def _gauge_move(r, rate=False):
+    """(short_name, value_str, change_str, change_value) or None if no data."""
+    if not r or r["last"] is None:
+        return None
+    short = r["name"].split(" (")[0]
+    if rate:
+        ch = bps_change(r["last"], r["prev"])
+        return (short, f'{fmt(r["last"])}%', sign(ch, " bps", 1), ch)
+    ch = pct_change(r["last"], r["prev"])
+    return (short, fmt(r["last"]), sign(ch), ch)
+
+
+def _snapshot_gauges(data, session):
+    out = []
+    for grp, name, rate in SNAPSHOT_GAUGES.get(session, SNAPSHOT_GAUGES["us"]):
+        g = _gauge_move(_find_row(data.get(grp, []), name), rate)
+        if g:
+            out.append(g)
+    return out
+
+
+def top_movers(data, n=3):
+    """Biggest % gainers and losers across all equity indices + commodities
+    (FX and rates excluded — their moves aren't comparable in %)."""
+    rows = []
+    for grp in ("us", "eu", "asia", "commodities"):
+        for r in data.get(grp, []):
+            ch = pct_change(r["last"], r["prev"])
+            if ch is not None:
+                rows.append((r["name"].split(" (")[0], ch))
+    rows.sort(key=lambda x: x[1])
+    gainers = list(reversed(rows[-n:])) if rows else []
+    losers = rows[:n]
+    return gainers, losers
+
+
+def snapshot_html(data, session):
+    gauges = _snapshot_gauges(data, session)
+    if not gauges:
+        return ""
+    chips = ' &nbsp;·&nbsp; '.join(
+        f'<b>{name}</b> {val} <span style="color:{color(ch)}">{chs}</span>'
+        for name, val, chs, ch in gauges
+    )
+    gainers, losers = top_movers(data)
+
+    def mv(items, arrow):
+        return ", ".join(f'{arrow} {n} {sign(c)}' for n, c in items)
+
+    movers = ""
+    if gainers or losers:
+        sep = ' &nbsp;·&nbsp; ' if gainers and losers else ""
+        movers = (f'<div style="font-size:13px;margin-top:6px">'
+                  f'<span style="color:#1e8449">{mv(gainers, "▲")}</span>{sep}'
+                  f'<span style="color:#c0392b">{mv(losers, "▼")}</span></div>')
+    return (f'<div style="background:#f7f8fa;border:1px solid #eee;border-radius:6px;'
+            f'padding:10px 12px;margin:0 0 18px;line-height:1.8">'
+            f'<div style="font-weight:600;text-transform:uppercase;letter-spacing:.04em;'
+            f'font-size:11px;color:#888;margin-bottom:4px">Snapshot — TL;DR</div>'
+            f'<div style="font-size:13px">{chips}</div>{movers}</div>')
+
+
+def snapshot_text(data, session):
+    gauges = _snapshot_gauges(data, session)
+    if not gauges:
+        return []
+    lines = ["SNAPSHOT — TL;DR",
+             "  " + "  |  ".join(f"{n} {v} ({c})" for n, v, c, _ in gauges)]
+    gainers, losers = top_movers(data)
+    if gainers:
+        lines.append("  Gainers: " + ", ".join(f"{n} {sign(c)}" for n, c in gainers))
+    if losers:
+        lines.append("  Losers:  " + ", ".join(f"{n} {sign(c)}" for n, c in losers))
+    lines.append("")
+    return lines
 
 
 def index_table(rows):
@@ -642,21 +880,26 @@ def build_html(data, asof_label, session="us"):
         return f'<h3 style="{h3}">{title}</h3>{html}'
 
     order = SESSION_REGIONS.get(session, REGION_ORDER)
+    snap = snapshot_html(data, session)
     news = sec("Market News — what moved things", headlines_html(data["news"], order))
     crypto = sec("Crypto — Institutional Flows", crypto_html(data["crypto"]))
+    asia = data.get("asia")
+    asia_sec = sec("Asia-Pacific (last close)", index_table(asia)) if asia else ""
     if session == "europe":
         title = "Europe &amp; UK Market Recap"
-        body = (news + crypto
+        body = (snap + news + crypto
                 + sec("Europe &amp; UK (close)", index_table(_eu_uk_first(data["eu"])))
                 + sec("FX (EUR, GBP)", index_table(data["fx"]))
                 + sec("Rates", rates_table(data["rates"]))
                 + sec("Commodities", index_table(data["commodities"]))
+                + asia_sec
                 + sec("US (prior close, reference)", index_table(data["us"])))
     else:
         title = "Market Recap"
-        body = (news + crypto
+        body = (snap + news + crypto
                 + sec("US Indices (close)", index_table(data["us"]))
                 + sec("Europe (close)", index_table(data["eu"]))
+                + asia_sec
                 + sec("FX", index_table(data["fx"]))
                 + sec("Rates", rates_table(data["rates"]))
                 + sec("Commodities", index_table(data["commodities"])))
@@ -675,6 +918,7 @@ def build_text(data, asof_label, session="us"):
     title = "EUROPE & UK MARKET RECAP" if session == "europe" else "MARKET RECAP"
     lines = [f"{title} — {asof_label}", ""]
     order = SESSION_REGIONS.get(session, REGION_ORDER)
+    lines += snapshot_text(data, session)
     lines.append("MARKET NEWS — what moved things")
     if data["news"]:
         for region, group in group_news(data["news"], order):
@@ -709,10 +953,14 @@ def build_text(data, asof_label, session="us"):
         block("FX (EUR, GBP)", data["fx"])
         block("Rates", data["rates"], rate=True)
         block("Commodities", data["commodities"])
+        if data.get("asia"):
+            block("Asia-Pacific (last close)", data["asia"])
         block("US (prior close, reference)", data["us"])
     else:
         block("US Indices (close)", data["us"])
         block("Europe (close)", data["eu"])
+        if data.get("asia"):
+            block("Asia-Pacific (last close)", data["asia"])
         block("FX", data["fx"])
         block("Rates", data["rates"], rate=True)
         block("Commodities", data["commodities"])
@@ -766,19 +1014,22 @@ def main():
     args = ap.parse_args()
 
     print("Fetching market data...", file=sys.stderr)
+    groups = [US_INDICES, EU_INDICES, ASIA_INDICES, FX, RATES, COMMODITIES]
+    cache = fetch_quotes_batch([t for g in groups for _, t in g])
     data = {
-        "us": collect(US_INDICES),
-        "eu": collect(EU_INDICES),
-        "fx": collect(FX),
-        "rates": collect(RATES),
-        "commodities": collect(COMMODITIES),
+        "us": collect(US_INDICES, cache),
+        "eu": collect(EU_INDICES, cache),
+        "asia": collect(ASIA_INDICES, cache),
+        "fx": collect(FX, cache),
+        "rates": collect(RATES, cache),
+        "commodities": collect(COMMODITIES, cache),
         "news": fetch_headlines(limit=90),
         "crypto": fetch_crypto_flows(limit=8),
     }
 
     # Sanity guard: if the data source is fully down (every quote n/a), fail the
     # run so the workflow's failure alert fires instead of sending an empty email.
-    quote_groups = ("us", "eu", "fx", "rates", "commodities")
+    quote_groups = ("us", "eu", "asia", "fx", "rates", "commodities")
     got = sum(1 for g in quote_groups for r in data[g] if r["last"] is not None)
     if got == 0:
         raise SystemExit("All market data came back empty — aborting so the alert fires.")

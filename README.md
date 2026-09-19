@@ -7,10 +7,17 @@
 A standalone Python script that pulls **real** market data, then **auto-sends** an
 HTML recap to your inbox via Gmail — no manual steps, runs free on GitHub Actions.
 
-Each email **leads with the market news that moved things**, grouped by region
-(Global, United States, United Kingdom, Europe, Japan & Korea, etc.), followed by
-the numbers: major indices, FX, rates, and commodities. Promotional listicles,
-crime/accident stories, and other non-market noise are filtered out.
+Each email opens with a **TL;DR snapshot** — headline gauges (S&P/Nasdaq/10Y/Brent/…)
+and the day's **biggest movers** — then **leads with the market news that moved
+things**, grouped by region (Global, United States, United Kingdom, Europe, Japan &
+Korea, etc.), followed by the numbers: major indices, **Asia-Pacific**, FX, rates,
+and commodities. Promotional listicles, crime/accident stories, and other non-market
+noise are filtered out.
+
+**News selection is importance-ranked, not just chronological.** Every admitted
+headline is scored — central-bank decisions, macro data (CPI/jobs/GDP), and
+mega-cap news rank above generic filler — and near-duplicate stories (the same
+event carried by several outlets) are collapsed to a single, strongest headline.
 
 Two scheduled runs:
 
@@ -107,10 +114,29 @@ $$\Delta_{\text{bps}} = \left(y_{\text{close}} - y_{\text{prev}}\right) \times 1
 
 ## Customizing
 
-- Edit the `US_INDICES`, `EU_INDICES`, `FX`, `RATES`, `COMMODITIES` lists in
-  `market_recap.py` to add/remove tickers (Yahoo Finance symbols).
+- Edit the `US_INDICES`, `EU_INDICES`, `ASIA_INDICES`, `FX`, `RATES`,
+  `COMMODITIES` lists in `market_recap.py` to add/remove tickers (Yahoo symbols).
 - Add or remove news feeds in `NEWS_FEEDS`.
-- Extend `BLOCKED_SOURCE_SUBSTRINGS` to block more sources.
+- Extend `BLOCKED_SOURCE_SUBSTRINGS` to block more sources, or `JUNK_PATTERNS` /
+  `NOISE_PATTERNS` to drop more low-value headline templates.
+- Tune the ranking: `HIGH_IMPACT_TERMS`, `MED_IMPACT_TERMS`, and `BIGCAP_TERMS`
+  feed `score_headline()`; `_near_dupe()` controls how aggressively duplicate
+  stories are merged.
+- Pick which gauges lead the TL;DR in `SNAPSHOT_GAUGES`.
+
+## Tests
+
+Pure logic (region classification, the news admit/reject gate, importance
+scoring, near-duplicate detection, movers/formatting) is covered by an offline
+test suite — no network, no email:
+
+```bash
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+These run automatically in the `validate` workflow on every PR, before the live
+`--dry-run` smoke tests.
 
 ## Notes
 
